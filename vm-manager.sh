@@ -1,8 +1,9 @@
 #!/bin/bash
 # ==============================================================================
-# PROXMOX VM MANAGER - ALEOGR (v6.2 - Collector's Edition)
+# PROXMOX VM MANAGER - ALEOGR (v6.3 - Kali Complete)
 # ==============================================================================
 # Suporte: Windows, Linux (Cloud/ISO), BSD, Slackware, Haiku, Solaris, DOS.
+# Novidade: Adicionado Kali Linux Standard (Installer ISO).
 # ==============================================================================
 
 # --- CONFIGURAÇÕES PADRÃO ---
@@ -29,7 +30,7 @@ header() {
  \_/\_/\____/(____) \___/  \___/ (__\_)
 EOF
     echo -e "${CL}"
-    echo -e "${YW}VM Manager v6.2 (Slackware + Solaris + Haiku)${CL}"
+    echo -e "${YW}VM Manager v6.3 (Kali Standard ISO)${CL}"
     echo ""
 }
 
@@ -51,8 +52,8 @@ configure_cpu_affinity() {
     local VMID=$1
     echo ""
     echo -e "${YW}--- CPU PINNING (i9-13900K) ---${CL}"
-    echo "1) P-Cores (0-15)  -> Performance"
-    echo "2) E-Cores (16-31) -> Background"
+    echo "1) P-Cores (0-15)  -> Performance (Ideal para Cracking)"
+    echo "2) E-Cores (16-31) -> Background (Ideal para Scans)"
     echo "3) Manual          -> Definir lista"
     echo "4) Padrão          -> Automático"
     echo "0) Pular"
@@ -73,7 +74,6 @@ sort_tags() {
         case "$t" in
             vm|container) TYPE="$t" ;;
             amd64|arm64) ARCH="$t" ;;
-            # Expandido para novas famílias
             linux|windows|bsd|solaris|haiku|dos) FAMILY="$t" ;;
             *) OTHERS="$OTHERS $t" ;;
         esac
@@ -194,14 +194,8 @@ create_windows_vm() {
 # --- MÓDULO 2: LINUX CLOUD ---
 create_cloud_vm() {
     echo -e "${GN}--- LINUX CLOUD-INIT ---${CL}"
-    echo "1) Debian 13"
-    echo "2) Ubuntu 24.04"
-    echo "3) Kali Linux"
-    echo "4) Fedora 41"
-    echo "5) Arch Linux"
-    echo "6) CentOS 9"
-    echo "7) Rocky 9"
-    echo "0) Voltar"
+    echo "1) Debian 13"; echo "2) Ubuntu 24.04"; echo "3) Kali Linux"; echo "4) Fedora 41"; echo "5) Arch Linux"
+    echo "6) CentOS 9"; echo "7) Rocky 9"; echo "0) Voltar"
     read -p "Opção: " OPT
     TAGS="vm,amd64,linux"
     
@@ -232,61 +226,65 @@ create_cloud_vm() {
 
 # --- MÓDULO 3: LINUX ISO ---
 create_iso_vm() {
-    echo -e "${GN}--- LINUX ISO ---${CL}"
-    echo "1) Mint 22"; echo "2) Kali Purple"; echo "3) Manjaro"; echo "4) Gentoo"; 
-    echo -e "${YW}5) Slackware 15.0${CL}"
+    echo -e "${GN}--- LINUX ISO (Manual Install) ---${CL}"
+    echo "1) Kali Linux Standard (Installer)"
+    echo "2) Kali Linux Purple (SOC)"
+    echo "3) Linux Mint 22"
+    echo "4) Manjaro Gnome"
+    echo "5) Slackware 15.0"
+    echo "6) Gentoo Minimal"
     echo "0) Voltar"
     read -p "Opção: " OPT
     TAGS="vm,amd64,linux"
+    
     case $OPT in
-        1) URL="https://mirrors.edge.kernel.org/linuxmint/stable/22/linuxmint-22-cinnamon-64bit.iso"; ISO="mint22.iso" ;;
+        1) URL="https://cdimage.kali.org/current/kali-linux-installer-amd64.iso"; ISO="kali-std.iso" ;;
         2) URL="https://cdimage.kali.org/current/kali-linux-purple-installer-amd64.iso"; ISO="kali-purple.iso" ;;
-        3) URL="https://download.manjaro.org/gnome/24.0.6/manjaro-gnome-24.0.6-240729-linux69.iso"; ISO="manjaro.iso" ;;
-        4) URL="https://distfiles.gentoo.org/releases/amd64/autobuilds/current-install-amd64-minimal/install-amd64-minimal.iso"; ISO="gentoo.iso" ;;
+        3) URL="https://mirrors.edge.kernel.org/linuxmint/stable/22/linuxmint-22-cinnamon-64bit.iso"; ISO="mint22.iso" ;;
+        4) URL="https://download.manjaro.org/gnome/24.0.6/manjaro-gnome-24.0.6-240729-linux69.iso"; ISO="manjaro.iso" ;;
         5) URL="https://mirrors.slackware.com/slackware/slackware64-15.0-iso/slackware64-15.0-install-dvd.iso"; ISO="slack15.iso" ;;
+        6) URL="https://distfiles.gentoo.org/releases/amd64/autobuilds/current-install-amd64-minimal/install-amd64-minimal.iso"; ISO="gentoo.iso" ;;
         0) return ;;
+        *) echo "Inválido."; sleep 1; return ;;
     esac
 
     if [ ! -f "$TEMP_DIR/$ISO" ]; then wget -q --show-progress "$URL" -O "$TEMP_DIR/$ISO"; fi
     read -p "ID: " VMID; read -p "Nome: " VMNAME
+    
+    # Kali/Linux Padrão
     qm create "$VMID" --name "$VMNAME" --memory 4096 --cores 4 --cpu host --net0 virtio,bridge="$DEFAULT_BRIDGE" --ostype l26
+    
     read -p "Disco GB (32): " DSIZE; [ -z "$DSIZE" ] && DSIZE=32
     qm set "$VMID" --scsihw virtio-scsi-pci --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on"
     qm set "$VMID" --ide2 "$ISO_STORAGE:iso/$ISO,media=cdrom" --vga virtio --agent enabled=1 --boot order=ide2;scsi0 --tags "$TAGS"
+    
     configure_cpu_affinity "$VMID"
     echo -e "${GN}Sucesso!${CL}"; read -p "Enter..."
 }
 
-# --- MÓDULO 4: BSD & OUTROS ---
+# --- MÓDULO 4: BSD / OUTROS ---
 create_other_vm() {
-    echo -e "${GN}--- BSD / UNIX / OUTROS ---${CL}"
-    echo "1) FreeBSD 14.1"
-    echo "2) OpenBSD 7.6"
-    echo "3) NetBSD 10.0"
-    echo "-----------------"
-    echo "4) Haiku R1 Beta 5 (BeOS)"
-    echo "5) OpenIndiana (Solaris/Illumos)"
-    echo "6) FreeDOS 1.3"
+    echo -e "${GN}--- BSD / OUTROS ---${CL}"
+    echo "1) FreeBSD 14.1"; echo "2) OpenBSD 7.6"; echo "3) NetBSD 10.0"
+    echo "4) Haiku R1 Beta 5"; echo "5) OpenIndiana"; echo "6) FreeDOS 1.3"
     echo "0) Voltar"
     read -p "Opção: " OPT
-
+    
     case $OPT in
         1) URL="https://download.freebsd.org/releases/amd64/amd64/ISO-IMAGES/14.1/FreeBSD-14.1-RELEASE-amd64-disc1.iso"; ISO="freebsd14.iso"; TAGS="vm,amd64,bsd" ;;
         2) URL="https://cdn.openbsd.org/pub/OpenBSD/7.6/amd64/install76.iso"; ISO="openbsd76.iso"; TAGS="vm,amd64,bsd" ;;
         3) URL="https://cdn.netbsd.org/pub/NetBSD/NetBSD-10.0/images/NetBSD-10.0-amd64.iso"; ISO="netbsd10.iso"; TAGS="vm,amd64,bsd" ;;
-        # Outras Famílias
         4) URL="https://s3.wasabisys.com/haiku-release/r1beta5/haiku-r1beta5-x86_64-anyboot.iso"; ISO="haiku.iso"; TAGS="vm,amd64,haiku" ;;
         5) URL="http://dlc.openindiana.org/isos/hipster/20240412/OI-hipster-gui-20240412.iso"; ISO="openindiana.iso"; TAGS="vm,amd64,solaris" ;;
         6) URL="https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.3/official/FD13-LiveCD.zip"; ISO="freedos.zip"; TAGS="vm,amd64,dos" ;;
         0) return ;;
     esac
 
-    # Tratamento especial para ZIP (FreeDOS)
     if [[ "$ISO" == *.zip ]]; then
         if [ ! -f "$TEMP_DIR/FD13LIVE.ISO" ]; then
             wget -q --show-progress "$URL" -O "$TEMP_DIR/$ISO"
             unzip -o "$TEMP_DIR/$ISO" -d "$TEMP_DIR"
-            ISO="FD13LIVE.ISO" # Nome interno do zip
+            ISO="FD13LIVE.ISO"
         else
             ISO="FD13LIVE.ISO"
         fi
@@ -295,20 +293,14 @@ create_other_vm() {
     fi
 
     read -p "ID: " VMID; read -p "Nome: " VMNAME
-    
-    # 'other' evita otimizações Linux que quebram BSD/Solaris
     qm create "$VMID" --name "$VMNAME" --memory 4096 --cores 2 --cpu host --net0 virtio,bridge="$DEFAULT_BRIDGE" --ostype other
-    
     read -p "Disco GB (32): " DSIZE; [ -z "$DSIZE" ] && DSIZE=32
     qm set "$VMID" --scsihw virtio-scsi-pci --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on"
-    qm set "$VMID" --ide2 "$ISO_STORAGE:iso/$ISO,media=cdrom" --vga std
-    qm set "$VMID" --boot order=ide2;scsi0 --tags "$TAGS"
-
+    qm set "$VMID" --ide2 "$ISO_STORAGE:iso/$ISO,media=cdrom" --vga std --boot order=ide2;scsi0 --tags "$TAGS"
     configure_cpu_affinity "$VMID"
     echo -e "${GN}Sucesso!${CL}"; read -p "Enter..."
 }
 
-# --- MENU DE CRIAÇÃO (SUBMENU) ---
 submenu_create() {
     while true; do
         header
@@ -317,7 +309,7 @@ submenu_create() {
         echo "2) Linux Cloud-Init (Automático)"
         echo "3) Linux ISO (Manual)"
         echo "4) BSD / Unix / Outros"
-        echo "0) Voltar ao Menu Principal"
+        echo "0) Voltar"
         echo ""
         read -p "Opção: " SOPT
         case $SOPT in
@@ -331,7 +323,6 @@ submenu_create() {
     done
 }
 
-# --- MENU PRINCIPAL ---
 while true; do
     header
     echo -e "1) ${GN}Listar e Gerenciar VMs (Dashboard)${CL}"
