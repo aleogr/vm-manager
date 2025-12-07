@@ -1,24 +1,17 @@
 #!/bin/bash
 # ==============================================================================
-# PROXMOX VM MANAGER - ALEOGR (v7.3 - Root Security Fix)
+# PROXMOX VM MANAGER - ALEOGR (v7.3 - Atomic Operations)
 # ==============================================================================
 # Correções:
-# - Verificação de Root via 'id -u' (Mais robusto que $EUID).
-# - Pré-checagem de existência dos binários do Proxmox.
+# - Comandos 'qm set' quebrados em linhas separadas para evitar erros de sintaxe.
+# - Maior estabilidade na execução.
 # ==============================================================================
 
-# --- 1. VERIFICAÇÃO DE ROOT (BLINDADA) ---
-if [[ $(id -u) -ne 0 ]]; then
-    echo ""
-    echo -e "\033[01;31m[ERRO CRÍTICO] PERMISSÃO NEGADA\033[m"
-    echo "Este script precisa de privilégios de Superusuário para gerenciar VMs."
-    echo ""
-    echo "Por favor, execute o comando abaixo para virar root:"
-    echo -e "\033[1;33m    sudo -i\033[m"
-    echo "    ou"
-    echo -e "\033[1;33m    su -\033[m"
-    echo ""
-    exit 1
+# --- VERIFICAÇÃO DE ROOT ---
+if [ "$EUID" -ne 0 ]; then
+  echo -e "\033[01;31mERRO: Este script precisa ser executado como ROOT.\033[m"
+  echo "Por favor, rode: su -"
+  exit 1
 fi
 
 # --- CONFIGURAÇÕES ---
@@ -32,14 +25,6 @@ TEMP_DIR="/var/lib/vz/template/iso"
 QM="/usr/sbin/qm"
 PVESM="/usr/sbin/pvesm"
 LSPCI="/usr/bin/lspci"
-
-# --- 2. VERIFICAÇÃO DE DEPENDÊNCIAS ---
-# Garante que estamos rodando num Proxmox antes de tentar qualquer coisa
-if [ ! -x "$QM" ]; then
-    echo -e "\033[01;31m[ERRO] Comando '$QM' não encontrado ou não executável.\033[m"
-    echo "Este script deve ser rodado dentro de um servidor Proxmox VE."
-    exit 1
-fi
 
 # --- CORES ---
 YW=$(echo "\033[33m")
@@ -58,7 +43,7 @@ header() {
  \_/\_/\____/(____) \___/  \___/ (__\_)
 EOF
     echo -e "${CL}"
-    echo -e "${YW}VM Manager v7.3 (Root Fixed)${CL}"
+    echo -e "${YW}VM Manager v7.3 (Atomic)${CL}"
     echo ""
 }
 
@@ -94,10 +79,10 @@ configure_cpu_affinity() {
     local VMID=$1
     echo ""
     echo -e "${YW}--- CPU PINNING (i9-13900K) ---${CL}"
-    echo "1) P-Cores (0-15)  -> Performance (Jogos/Compilação)"
-    echo "2) E-Cores (16-31) -> Background/Serviços Leves"
-    echo "3) Manual          -> Definir lista (ex: 0-7)"
-    echo "4) Padrão          -> Automático (Scheduler do Host)"
+    echo "1) P-Cores (0-15)  -> Performance"
+    echo "2) E-Cores (16-31) -> Background"
+    echo "3) Manual          -> Definir lista"
+    echo "4) Padrão          -> Automático"
     echo "0) Pular"
     read -p "Opção: " CPU_OPT
     case $CPU_OPT in
@@ -109,13 +94,13 @@ configure_cpu_affinity() {
     esac
 }
 
-# --- DASHBOARD INTERATIVO ---
+# --- DASHBOARD ---
 manage_vms() {
     while true; do
         header
         echo -e "${GN}--- DASHBOARD DE VMS ---${CL}"
         printf "${YW}%-6s | %-20s | %-10s | %-4s | %-8s | %-8s | %-35s${CL}\n" \
-            "ID" "NOME" "STATUS" "CPU" "RAM" "TYPE" "TAGS (Ordenadas)"
+            "ID" "NOME" "STATUS" "CPU" "RAM" "TYPE" "TAGS"
         echo "--------------------------------------------------------------------------------------------------------"
 
         for vmid in $($QM list | awk 'NR>1 {print $1}' | sort -n); do
@@ -124,7 +109,6 @@ manage_vms() {
             STATUS=$($QM status $vmid | awk '{print $2}')
             CORES=$(echo "$CONF" | grep "^cores:" | awk '{print $2}')
             [ -z "$CORES" ] && CORES="1"
-            
             MEM_MB=$(echo "$CONF" | grep "^memory:" | awk '{print $2}')
             if [ "$MEM_MB" -ge 1024 ]; then
                 MEM=$(echo "scale=1; $MEM_MB/1024" | bc | awk '{print int($1+0.5)}')
@@ -132,10 +116,8 @@ manage_vms() {
             else
                 MEM="${MEM_MB}MB"
             fi
-
             RAW_TAGS=$(echo "$CONF" | grep "^tags:" | cut -d: -f2 | tr -d ' ' | tr ',' ' ')
             SORTED_TAGS=$(sort_tags "$RAW_TAGS")
-
             if echo "$CONF" | grep -q "hostpci0"; then DISPLAY="GPU"; else DISPLAY="Std"; fi
             if [ "$STATUS" == "running" ]; then S_COLOR=$GN; else S_COLOR=$RD; fi
 
@@ -144,9 +126,7 @@ manage_vms() {
         done
         echo "--------------------------------------------------------------------------------------------------------"
         echo ""
-        echo -e "Digite o ${BL}ID${CL} para abrir o menu de ações."
-        echo -e "Digite ${BL}r${CL} para atualizar a lista."
-        echo -e "Digite ${BL}0${CL} para voltar ao menu principal."
+        echo -e "Digite ${BL}ID${CL} para gerenciar | ${BL}r${CL} para atualizar | ${BL}0${CL} para voltar."
         echo ""
         read -p "> " ACTION
 
@@ -155,7 +135,7 @@ manage_vms() {
 
         if [[ "$ACTION" =~ ^[0-9]+$ ]]; then
             if ! $QM status "$ACTION" >/dev/null 2>&1; then
-                echo -e "${RD}VM $ACTION não encontrada.${CL}"; sleep 1; continue
+                echo -e "${RD}VM não encontrada.${CL}"; sleep 1; continue
             fi
             
             VMNAME_SEL=$($QM config "$ACTION" | grep name | awk '{print $2}')
@@ -176,14 +156,11 @@ manage_vms() {
             read -p "Opção: " ACT
 
             case $ACT in
-                1) 
-                    if [ "$CURR_STATUS" == "stopped" ]; then $QM start $ACTION; else $QM shutdown $ACTION; fi ;;
-                2) 
-                    if [ "$CURR_STATUS" == "running" ]; then $QM stop $ACTION; fi
-                    ;;
+                1) if [ "$CURR_STATUS" == "stopped" ]; then $QM start $ACTION; else $QM shutdown $ACTION; fi ;;
+                2) if [ "$CURR_STATUS" == "running" ]; then $QM stop $ACTION; fi ;;
                 3) $QM reboot $ACTION ;;
                 4) 
-                    echo -e "${RD}CONFIRMA A DESTRUIÇÃO TOTAL DA VM $ACTION?${CL}"
+                    echo -e "${RD}CONFIRMA DESTRUIÇÃO?${CL}"
                     read -p "Digite 'CONFIRMAR': " SURE
                     if [ "$SURE" == "CONFIRMAR" ]; then
                         [ "$CURR_STATUS" == "running" ] && $QM stop $ACTION
@@ -232,18 +209,26 @@ create_windows_vm() {
 
     read -p "Disco GB (64): " DSIZE; [ -z "$DSIZE" ] && DSIZE=64
     
-    $QM set "$VMID" --efidisk0 "$DEFAULT_STORAGE:0,efitype=4m" --tpmstate0 "$DEFAULT_STORAGE:0,version=v2.0" --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on"
+    # --- CORREÇÃO: Comandos Atômicos (Separados) ---
+    $QM set "$VMID" --efidisk0 "$DEFAULT_STORAGE:0,efitype=4m"
+    $QM set "$VMID" --tpmstate0 "$DEFAULT_STORAGE:0,version=v2.0"
+    $QM set "$VMID" --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on"
 
     [ -n "$WIN_ISO" ] && $QM set "$VMID" --ide2 "$WIN_ISO,media=cdrom"
     [ -n "$VIRTIO_ISO" ] && $QM set "$VMID" --ide0 "$VIRTIO_ISO,media=cdrom"
     
-    $QM set "$VMID" --boot order=ide2;scsi0 --agent enabled=1 --tags "$TAGS"
+    $QM set "$VMID" --boot order=ide2;scsi0 
+    $QM set "$VMID" --agent enabled=1 
+    $QM set "$VMID" --tags "$TAGS"
 
     if [ "$GPU_MODE" == "on" ]; then
-        $QM set "$VMID" --balloon 0 --hostpci0 "$TARGET_GPU,pcie=1,x-vga=1,rombar=1" --vga none
+        $QM set "$VMID" --balloon 0 
+        $QM set "$VMID" --hostpci0 "$TARGET_GPU,pcie=1,x-vga=1,rombar=1" 
+        $QM set "$VMID" --vga none
         $QM set "$VMID" --affinity "0-15"
     else
-        $QM set "$VMID" --balloon 1024 --vga std
+        $QM set "$VMID" --balloon 1024 
+        $QM set "$VMID" --vga std
         configure_cpu_affinity "$VMID"
     fi
     echo -e "${GN}Sucesso!${CL}"; read -p "Enter..."
@@ -271,11 +256,19 @@ create_cloud_vm() {
 
     read -p "ID: " VMID; read -p "Nome: " VMNAME
     wget -q --show-progress "$URL" -O "$TEMP_DIR/$IMG"
+    
     $QM create "$VMID" --name "$VMNAME" --memory 2048 --cores 2 --cpu host --net0 virtio,bridge="$DEFAULT_BRIDGE"
     $QM importdisk "$VMID" "$TEMP_DIR/$IMG" "$DEFAULT_STORAGE"
-    $QM set "$VMID" --scsihw virtio-scsi-pci --scsi0 "$DEFAULT_STORAGE:vm-$VMID-disk-0,discard=on"
-    $QM set "$VMID" --ide2 "$DEFAULT_STORAGE:cloudinit" --boot c --bootdisk scsi0 --serial0 socket --vga serial0 --ciuser "$DEFAULT_USER" --ipconfig0 ip=dhcp --tags "$TAGS"
     
+    # Comandos Atômicos
+    $QM set "$VMID" --scsihw virtio-scsi-pci 
+    $QM set "$VMID" --scsi0 "$DEFAULT_STORAGE:vm-$VMID-disk-0,discard=on" 
+    $QM set "$VMID" --ide2 "$DEFAULT_STORAGE:cloudinit" 
+    $QM set "$VMID" --boot c --bootdisk scsi0 
+    $QM set "$VMID" --serial0 socket --vga serial0 
+    $QM set "$VMID" --ciuser "$DEFAULT_USER" --ipconfig0 ip=dhcp 
+    $QM set "$VMID" --tags "$TAGS"
+
     read -p "Extra GB (32): " ADD_GB; [ -z "$ADD_GB" ] && ADD_GB=32
     $QM resize "$VMID" scsi0 "+${ADD_GB}G"
     rm "$TEMP_DIR/$IMG"
@@ -301,15 +294,22 @@ create_iso_vm() {
 
     if [ ! -f "$TEMP_DIR/$ISO" ]; then wget -q --show-progress "$URL" -O "$TEMP_DIR/$ISO"; fi
     read -p "ID: " VMID; read -p "Nome: " VMNAME
+    
     $QM create "$VMID" --name "$VMNAME" --memory 4096 --cores 4 --cpu host --net0 virtio,bridge="$DEFAULT_BRIDGE" --ostype l26
     read -p "Disco GB (32): " DSIZE; [ -z "$DSIZE" ] && DSIZE=32
+    
+    # Comandos Atômicos
     $QM set "$VMID" --scsihw virtio-scsi-pci --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on"
-    $QM set "$VMID" --ide2 "$ISO_STORAGE:iso/$ISO,media=cdrom" --vga virtio --agent enabled=1 --boot order=ide2;scsi0 --tags "$TAGS"
+    $QM set "$VMID" --ide2 "$ISO_STORAGE:iso/$ISO,media=cdrom" 
+    $QM set "$VMID" --vga virtio --agent enabled=1 
+    $QM set "$VMID" --boot order=ide2;scsi0 
+    $QM set "$VMID" --tags "$TAGS"
+    
     configure_cpu_affinity "$VMID"
     echo -e "${GN}Sucesso!${CL}"; read -p "Enter..."
 }
 
-# --- MÓDULO 4: BSD / OUTROS ---
+# --- MÓDULO 4: BSD ---
 create_other_vm() {
     echo -e "${GN}--- BSD / OUTROS ---${CL}"
     echo "1) FreeBSD 14"; echo "2) OpenBSD 7.6"; echo "3) NetBSD 10"; echo "4) Haiku"
@@ -342,7 +342,15 @@ create_other_vm() {
     read -p "ID: " VMID; read -p "Nome: " VMNAME
     $QM create "$VMID" --name "$VMNAME" --memory 4096 --cores 2 --cpu host --net0 virtio,bridge="$DEFAULT_BRIDGE" --ostype other
     read -p "Disco GB (32): " DSIZE; [ -z "$DSIZE" ] && DSIZE=32
-    $QM set "$VMID" --scsihw virtio-scsi-pci --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on" --ide2 "$ISO_STORAGE:iso/$ISO,media=cdrom" --vga std --boot order=ide2;scsi0 --tags "$TAGS"
+    
+    # Comandos Atômicos
+    $QM set "$VMID" --scsihw virtio-scsi-pci 
+    $QM set "$VMID" --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on" 
+    $QM set "$VMID" --ide2 "$ISO_STORAGE:iso/$ISO,media=cdrom" 
+    $QM set "$VMID" --vga std 
+    $QM set "$VMID" --boot order=ide2;scsi0 
+    $QM set "$VMID" --tags "$TAGS"
+    
     configure_cpu_affinity "$VMID"
     echo -e "${GN}Sucesso!${CL}"; read -p "Enter..."
 }
