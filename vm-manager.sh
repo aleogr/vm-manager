@@ -1,10 +1,25 @@
 #!/bin/bash
 # ==============================================================================
-# PROXMOX VM MANAGER - ALEOGR (v7.1 - Navigation UX)
+# PROXMOX VM MANAGER - ALEOGR (v7.3 - Root Security Fix)
 # ==============================================================================
-# Gerenciamento de VMs.
-# Melhorias: Navegação consistente, Menus de Ação dedicados e Rótulos claros.
+# Correções:
+# - Verificação de Root via 'id -u' (Mais robusto que $EUID).
+# - Pré-checagem de existência dos binários do Proxmox.
 # ==============================================================================
+
+# --- 1. VERIFICAÇÃO DE ROOT (BLINDADA) ---
+if [[ $(id -u) -ne 0 ]]; then
+    echo ""
+    echo -e "\033[01;31m[ERRO CRÍTICO] PERMISSÃO NEGADA\033[m"
+    echo "Este script precisa de privilégios de Superusuário para gerenciar VMs."
+    echo ""
+    echo "Por favor, execute o comando abaixo para virar root:"
+    echo -e "\033[1;33m    sudo -i\033[m"
+    echo "    ou"
+    echo -e "\033[1;33m    su -\033[m"
+    echo ""
+    exit 1
+fi
 
 # --- CONFIGURAÇÕES ---
 DEFAULT_STORAGE="VM-Storage"
@@ -12,6 +27,19 @@ ISO_STORAGE="local"
 DEFAULT_BRIDGE="vmbr0"
 DEFAULT_USER="aleogr"
 TEMP_DIR="/var/lib/vz/template/iso"
+
+# Comandos com caminho absoluto
+QM="/usr/sbin/qm"
+PVESM="/usr/sbin/pvesm"
+LSPCI="/usr/bin/lspci"
+
+# --- 2. VERIFICAÇÃO DE DEPENDÊNCIAS ---
+# Garante que estamos rodando num Proxmox antes de tentar qualquer coisa
+if [ ! -x "$QM" ]; then
+    echo -e "\033[01;31m[ERRO] Comando '$QM' não encontrado ou não executável.\033[m"
+    echo "Este script deve ser rodado dentro de um servidor Proxmox VE."
+    exit 1
+fi
 
 # --- CORES ---
 YW=$(echo "\033[33m")
@@ -30,14 +58,14 @@ header() {
  \_/\_/\____/(____) \___/  \___/ (__\_)
 EOF
     echo -e "${CL}"
-    echo -e "${YW}VM Manager v7.1 (Navigation Fix)${CL}"
+    echo -e "${YW}VM Manager v7.3 (Root Fixed)${CL}"
     echo ""
 }
 
 # --- AUXILIARES ---
 
 detect_gpu() {
-    GPU_RAW=$(lspci -nn | grep -i "NVIDIA" | grep -i "VGA" | head -n 1 | awk '{print $1}')
+    GPU_RAW=$($LSPCI -nn | grep -i "NVIDIA" | grep -i "VGA" | head -n 1 | awk '{print $1}')
     if [ -z "$GPU_RAW" ]; then return 1; else
         SHORT_ID=$(echo "$GPU_RAW" | cut -d. -f1); echo "0000:$SHORT_ID"; return 0
     fi
@@ -45,7 +73,7 @@ detect_gpu() {
 
 find_iso() {
     SEARCH_TERM=$1
-    pvesm list $ISO_STORAGE --content iso | grep -i "$SEARCH_TERM" | head -n 1 | awk '{print $1}'
+    $PVESM list $ISO_STORAGE --content iso | grep -i "$SEARCH_TERM" | head -n 1 | awk '{print $1}'
 }
 
 sort_tags() {
@@ -66,119 +94,44 @@ configure_cpu_affinity() {
     local VMID=$1
     echo ""
     echo -e "${YW}--- CPU PINNING (i9-13900K) ---${CL}"
-    echo "1) P-Cores (0-15)  -> Performance"
-    echo "2) E-Cores (16-31) -> Background"
-    echo "3) Manual          -> Definir lista"
-    echo "4) Padrão          -> Automático"
-    echo "0) Pular (Manter padrão)"
+    echo "1) P-Cores (0-15)  -> Performance (Jogos/Compilação)"
+    echo "2) E-Cores (16-31) -> Background/Serviços Leves"
+    echo "3) Manual          -> Definir lista (ex: 0-7)"
+    echo "4) Padrão          -> Automático (Scheduler do Host)"
+    echo "0) Pular"
     read -p "Opção: " CPU_OPT
     case $CPU_OPT in
-        1) qm set "$VMID" --affinity "0-15"; echo -e "${GN}P-Cores.${CL}" ;;
-        2) qm set "$VMID" --affinity "16-31"; echo -e "${BL}E-Cores.${CL}" ;;
-        3) read -p "Núcleos: " MP; qm set "$VMID" --affinity "$MP"; ;;
-        4) qm set "$VMID" --delete affinity ;;
+        1) $QM set "$VMID" --affinity "0-15"; echo -e "${GN}P-Cores.${CL}" ;;
+        2) $QM set "$VMID" --affinity "16-31"; echo -e "${BL}E-Cores.${CL}" ;;
+        3) read -p "Núcleos: " MP; $QM set "$VMID" --affinity "$MP"; ;;
+        4) $QM set "$VMID" --delete affinity ;;
         *) return ;;
     esac
 }
 
-# --- SUBMENU: AÇÕES DA VM ---
-vm_actions_menu() {
-    local VMID=$1
-    local VMNAME=$2
-    
-    while true; do
-        local STATUS=$(qm status $VMID | awk '{print $2}')
-        if [ "$STATUS" == "running" ]; then S_COLOR=$GN; else S_COLOR=$RD; fi
-        
-        clear
-        echo -e "${BL}=== GERENCIAR VM: $VMID ($VMNAME) ===${CL}"
-        echo -e "Estado: ${S_COLOR}${STATUS^^}${CL}"
-        echo "-------------------------------------"
-        
-        echo -e "${YW}[ ENERGIA ]${CL}"
-        if [ "$STATUS" == "stopped" ]; then
-            echo "1) Iniciar (Start)"
-        else
-            echo "1) Desligar Suave (Shutdown)"
-            echo "2) Forçar Parada (Stop)"
-            echo "3) Reiniciar (Reboot)"
-        fi
-        
-        echo -e "${YW}[ OPERAÇÕES ]${CL}"
-        echo "4) Criar Snapshot"
-        if [ "$STATUS" == "stopped" ]; then
-            echo "5) Rollback (Restaurar)"
-            echo "6) Converter para Template"
-            echo "7) Aumentar Disco"
-        else
-            echo -e "${GR}5-7) Pare a VM para estas ações${CL}"
-        fi
-        
-        echo -e "${YW}[ PERIGO ]${CL}"
-        echo "9) EXCLUIR VM (Destroy)"
-        echo ""
-        echo "0) Voltar ao Dashboard"
-        echo ""
-        read -p "Ação: " ACT
-
-        case $ACT in
-            1) 
-                if [ "$STATUS" == "stopped" ]; then qm start $VMID; else qm shutdown $VMID; fi 
-                sleep 2 ;;
-            2) qm stop $VMID; sleep 2 ;;
-            3) qm reboot $VMID; sleep 2 ;;
-            4) 
-                read -p "Nome do Snapshot: " SNAP_NAME
-                [ -n "$SNAP_NAME" ] && qm snapshot $VMID "$SNAP_NAME" && echo "Feito." && sleep 1
-                ;;
-            5)
-                qm listsnapshot $VMID
-                read -p "Nome do Snapshot para restaurar: " SNAP_TARGET
-                [ -n "$SNAP_TARGET" ] && qm rollback $VMID "$SNAP_TARGET" && echo "Feito." && sleep 1
-                ;;
-            6)
-                read -p "Converter para Template? (s/n): " SURE
-                [[ "$SURE" == "s" ]] && qm template $VMID && echo "Convertido." && return
-                ;;
-            7)
-                read -p "Adicionar GBs: " GBS
-                [[ "$GBS" =~ ^[0-9]+$ ]] && qm resize $VMID scsi0 "+${GBS}G" && echo "Expandido." && sleep 1
-                ;;
-            9)
-                echo -e "${RD}CONFIRMA EXCLUSÃO DE $VMID?${CL}"
-                read -p "Digite 'CONFIRMAR': " CONFIRM
-                if [ "$CONFIRM" == "CONFIRMAR" ]; then
-                    [ "$STATUS" == "running" ] && qm stop $VMID
-                    qm destroy $VMID --purge
-                    echo "VM Deletada."
-                    sleep 1
-                    return
-                fi
-                ;;
-            0) return ;;
-            *) ;;
-        esac
-    done
-}
-
-# --- DASHBOARD PRINCIPAL ---
+# --- DASHBOARD INTERATIVO ---
 manage_vms() {
     while true; do
         header
         echo -e "${GN}--- DASHBOARD DE VMS ---${CL}"
         printf "${YW}%-6s | %-20s | %-10s | %-4s | %-8s | %-8s | %-35s${CL}\n" \
-            "ID" "NOME" "STATUS" "CPU" "RAM" "TYPE" "TAGS"
+            "ID" "NOME" "STATUS" "CPU" "RAM" "TYPE" "TAGS (Ordenadas)"
         echo "--------------------------------------------------------------------------------------------------------"
 
-        for vmid in $(qm list | awk 'NR>1 {print $1}' | sort -n); do
-            CONF=$(qm config $vmid)
+        for vmid in $($QM list | awk 'NR>1 {print $1}' | sort -n); do
+            CONF=$($QM config $vmid)
             NAME=$(echo "$CONF" | grep "^name:" | awk '{print $2}')
-            STATUS=$(qm status $vmid | awk '{print $2}')
+            STATUS=$($QM status $vmid | awk '{print $2}')
             CORES=$(echo "$CONF" | grep "^cores:" | awk '{print $2}')
             [ -z "$CORES" ] && CORES="1"
-            MEM=$(echo "$CONF" | grep "^memory:" | awk '{print $2}')
-            # Convert MB to GB for display
-            if [ "$MEM" -ge 1024 ]; then MEM="$(echo "scale=1; $MEM/1024" | bc | awk '{print int($1+0.5)}')GB"; else MEM="${MEM}MB"; fi
+            
+            MEM_MB=$(echo "$CONF" | grep "^memory:" | awk '{print $2}')
+            if [ "$MEM_MB" -ge 1024 ]; then
+                MEM=$(echo "scale=1; $MEM_MB/1024" | bc | awk '{print int($1+0.5)}')
+                MEM="${MEM}GB"
+            else
+                MEM="${MEM_MB}MB"
+            fi
 
             RAW_TAGS=$(echo "$CONF" | grep "^tags:" | cut -d: -f2 | tr -d ' ' | tr ',' ' ')
             SORTED_TAGS=$(sort_tags "$RAW_TAGS")
@@ -191,9 +144,9 @@ manage_vms() {
         done
         echo "--------------------------------------------------------------------------------------------------------"
         echo ""
-        echo -e "Digite o ${BL}ID${CL} para gerenciar a VM."
+        echo -e "Digite o ${BL}ID${CL} para abrir o menu de ações."
         echo -e "Digite ${BL}r${CL} para atualizar a lista."
-        echo -e "Digite ${BL}0${CL} para Voltar ao Menu Principal."
+        echo -e "Digite ${BL}0${CL} para voltar ao menu principal."
         echo ""
         read -p "> " ACTION
 
@@ -201,24 +154,56 @@ manage_vms() {
         if [ "$ACTION" == "r" ]; then continue; fi
 
         if [[ "$ACTION" =~ ^[0-9]+$ ]]; then
-            if ! qm status "$ACTION" >/dev/null 2>&1; then
-                echo -e "${RD}VM não encontrada.${CL}"; sleep 1; continue
+            if ! $QM status "$ACTION" >/dev/null 2>&1; then
+                echo -e "${RD}VM $ACTION não encontrada.${CL}"; sleep 1; continue
             fi
-            VMNAME=$(qm config "$ACTION" | grep name | awk '{print $2}')
-            # Chama o submenu de ações
-            vm_actions_menu "$ACTION" "$VMNAME"
+            
+            VMNAME_SEL=$($QM config "$ACTION" | grep name | awk '{print $2}')
+            CURR_STATUS=$($QM status $ACTION | awk '{print $2}')
+            
+            echo ""
+            echo -e "${YW}--- AÇÕES PARA: $VMNAME_SEL ($ACTION) ---${CL}"
+            if [ "$CURR_STATUS" == "stopped" ]; then
+                echo "1) Iniciar (Start)"
+                echo "2) Excluir Definitivamente (Destroy)"
+            else
+                echo "1) Desligar Suave (Shutdown)"
+                echo "2) Forçar Parada (Stop)"
+                echo "3) Reiniciar (Reboot)"
+                echo "4) Excluir Definitivamente (Destroy)"
+            fi
+            echo "0) Cancelar"
+            read -p "Opção: " ACT
+
+            case $ACT in
+                1) 
+                    if [ "$CURR_STATUS" == "stopped" ]; then $QM start $ACTION; else $QM shutdown $ACTION; fi ;;
+                2) 
+                    if [ "$CURR_STATUS" == "running" ]; then $QM stop $ACTION; fi
+                    ;;
+                3) $QM reboot $ACTION ;;
+                4) 
+                    echo -e "${RD}CONFIRMA A DESTRUIÇÃO TOTAL DA VM $ACTION?${CL}"
+                    read -p "Digite 'CONFIRMAR': " SURE
+                    if [ "$SURE" == "CONFIRMAR" ]; then
+                        [ "$CURR_STATUS" == "running" ] && $QM stop $ACTION
+                        $QM destroy $ACTION --purge
+                        echo "Deletada."
+                        sleep 1
+                    fi
+                    ;;
+            esac
         fi
     done
 }
 
-# --- FUNÇÕES DE CRIAÇÃO ---
-
+# --- MÓDULO 1: WINDOWS ---
 create_windows_vm() {
     echo -e "${GN}--- VM WINDOWS ---${CL}"
     echo "1) Windows 11 Standard"
     echo "2) Windows Server"
     echo -e "${YW}3) Windows Gamer (GPU)${CL}"
-    echo "0) Cancelar e Voltar"
+    echo "0) Voltar"
     read -p "Opção: " WIN_TYPE
 
     case $WIN_TYPE in
@@ -235,41 +220,43 @@ create_windows_vm() {
     fi
 
     read -p "ID da VM: " VMID; if [ -z "$VMID" ]; then return; fi
-    if qm status "$VMID" >/dev/null 2>&1; then echo "ID existe."; return; fi
+    if $QM status "$VMID" >/dev/null 2>&1; then echo "ID existe."; return; fi
     read -p "Nome: " VMNAME
 
-    WIN_ISO=$(find_iso "$ISO_SEARCH"); VIRTIO_ISO=$(find_iso "virtio")
+    WIN_ISO=$(find_iso "$ISO_SEARCH")
+    VIRTIO_ISO=$(find_iso "virtio")
     if [ -z "$WIN_ISO" ]; then read -p "Caminho ISO Windows: " WIN_ISO; fi
 
-    qm create "$VMID" --name "$VMNAME" --memory 8192 --cores 4 \
+    $QM create "$VMID" --name "$VMNAME" --memory 8192 --cores 4 \
         --machine q35 --bios ovmf --cpu host --numa 1 --net0 virtio,bridge="$DEFAULT_BRIDGE" --ostype win11 --scsihw virtio-scsi-pci
 
     read -p "Disco GB (64): " DSIZE; [ -z "$DSIZE" ] && DSIZE=64
-    qm set "$VMID" --efidisk0 "$DEFAULT_STORAGE:0,efitype=4m" --tpmstate0 "$DEFAULT_STORAGE:0,version=v2.0" \
-        --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on"
+    
+    $QM set "$VMID" --efidisk0 "$DEFAULT_STORAGE:0,efitype=4m" --tpmstate0 "$DEFAULT_STORAGE:0,version=v2.0" --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on"
 
-    [ -n "$WIN_ISO" ] && qm set "$VMID" --ide2 "$WIN_ISO,media=cdrom"
-    [ -n "$VIRTIO_ISO" ] && qm set "$VMID" --ide0 "$VIRTIO_ISO,media=cdrom"
-    qm set "$VMID" --boot order=ide2;scsi0 --agent enabled=1 --tags "$TAGS"
+    [ -n "$WIN_ISO" ] && $QM set "$VMID" --ide2 "$WIN_ISO,media=cdrom"
+    [ -n "$VIRTIO_ISO" ] && $QM set "$VMID" --ide0 "$VIRTIO_ISO,media=cdrom"
+    
+    $QM set "$VMID" --boot order=ide2;scsi0 --agent enabled=1 --tags "$TAGS"
 
     if [ "$GPU_MODE" == "on" ]; then
-        qm set "$VMID" --balloon 0 --hostpci0 "$TARGET_GPU,pcie=1,x-vga=1,rombar=1" --vga none
-        qm set "$VMID" --affinity "0-15"
+        $QM set "$VMID" --balloon 0 --hostpci0 "$TARGET_GPU,pcie=1,x-vga=1,rombar=1" --vga none
+        $QM set "$VMID" --affinity "0-15"
     else
-        qm set "$VMID" --balloon 1024 --vga std
+        $QM set "$VMID" --balloon 1024 --vga std
         configure_cpu_affinity "$VMID"
     fi
     echo -e "${GN}Sucesso!${CL}"; read -p "Enter..."
 }
 
+# --- MÓDULO 2: LINUX CLOUD ---
 create_cloud_vm() {
     echo -e "${GN}--- LINUX CLOUD-INIT ---${CL}"
-    echo "1) Debian 13"; echo "2) Ubuntu 24.04"; echo "3) Kali Linux"; echo "4) Fedora 41"
-    echo "5) Arch Linux"; echo "6) CentOS 9"; echo "7) Rocky 9"
-    echo "0) Cancelar e Voltar"
+    echo "1) Debian 13"; echo "2) Ubuntu 24.04"; echo "3) Kali Linux"; echo "4) Fedora 41"; echo "5) Arch Linux"
+    echo "6) CentOS 9"; echo "7) Rocky 9"; echo "0) Voltar"
     read -p "Opção: " OPT
     TAGS="vm,amd64,linux"
-
+    
     case $OPT in
         1) URL="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"; IMG="deb13.qcow2" ;;
         2) URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"; IMG="ubu24.img" ;;
@@ -284,25 +271,24 @@ create_cloud_vm() {
 
     read -p "ID: " VMID; read -p "Nome: " VMNAME
     wget -q --show-progress "$URL" -O "$TEMP_DIR/$IMG"
-    qm create "$VMID" --name "$VMNAME" --memory 2048 --cores 2 --cpu host --net0 virtio,bridge="$DEFAULT_BRIDGE"
-    qm importdisk "$VMID" "$TEMP_DIR/$IMG" "$DEFAULT_STORAGE"
-    qm set "$VMID" --scsihw virtio-scsi-pci --scsi0 "$DEFAULT_STORAGE:vm-$VMID-disk-0,discard=on"
-    qm set "$VMID" --ide2 "$DEFAULT_STORAGE:cloudinit" --boot c --bootdisk scsi0 --serial0 socket --vga serial0 --ciuser "$DEFAULT_USER" --ipconfig0 ip=dhcp --tags "$TAGS"
-    read -p "Extra GB: " ADD_GB; [ -z "$ADD_GB" ] && ADD_GB=32
-    qm resize "$VMID" scsi0 "+${ADD_GB}G"
+    $QM create "$VMID" --name "$VMNAME" --memory 2048 --cores 2 --cpu host --net0 virtio,bridge="$DEFAULT_BRIDGE"
+    $QM importdisk "$VMID" "$TEMP_DIR/$IMG" "$DEFAULT_STORAGE"
+    $QM set "$VMID" --scsihw virtio-scsi-pci --scsi0 "$DEFAULT_STORAGE:vm-$VMID-disk-0,discard=on"
+    $QM set "$VMID" --ide2 "$DEFAULT_STORAGE:cloudinit" --boot c --bootdisk scsi0 --serial0 socket --vga serial0 --ciuser "$DEFAULT_USER" --ipconfig0 ip=dhcp --tags "$TAGS"
+    
+    read -p "Extra GB (32): " ADD_GB; [ -z "$ADD_GB" ] && ADD_GB=32
+    $QM resize "$VMID" scsi0 "+${ADD_GB}G"
     rm "$TEMP_DIR/$IMG"
     configure_cpu_affinity "$VMID"
     echo -e "${GN}Sucesso!${CL}"; read -p "Enter..."
 }
 
+# --- MÓDULO 3: LINUX ISO ---
 create_iso_vm() {
-    echo -e "${GN}--- LINUX ISO (Manual) ---${CL}"
-    echo "1) Mint 22"; echo "2) Kali Standard"; echo "3) Kali Purple"
-    echo "4) Manjaro"; echo "5) Slackware 15"; echo "6) Gentoo"
-    echo "0) Cancelar e Voltar"
+    echo -e "${GN}--- LINUX ISO ---${CL}"
+    echo "1) Mint 22"; echo "2) Kali Standard"; echo "3) Kali Purple"; echo "4) Manjaro"; echo "5) Slackware 15"; echo "6) Gentoo"; echo "0) Voltar"
     read -p "Opção: " OPT
     TAGS="vm,amd64,linux"
-
     case $OPT in
         1) URL="https://mirrors.edge.kernel.org/linuxmint/stable/22/linuxmint-22-cinnamon-64bit.iso"; ISO="mint22.iso" ;;
         2) URL="https://cdimage.kali.org/current/kali-linux-installer-amd64.iso"; ISO="kali-std.iso" ;;
@@ -315,18 +301,19 @@ create_iso_vm() {
 
     if [ ! -f "$TEMP_DIR/$ISO" ]; then wget -q --show-progress "$URL" -O "$TEMP_DIR/$ISO"; fi
     read -p "ID: " VMID; read -p "Nome: " VMNAME
-    qm create "$VMID" --name "$VMNAME" --memory 4096 --cores 4 --cpu host --net0 virtio,bridge="$DEFAULT_BRIDGE" --ostype l26
+    $QM create "$VMID" --name "$VMNAME" --memory 4096 --cores 4 --cpu host --net0 virtio,bridge="$DEFAULT_BRIDGE" --ostype l26
     read -p "Disco GB (32): " DSIZE; [ -z "$DSIZE" ] && DSIZE=32
-    qm set "$VMID" --scsihw virtio-scsi-pci --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on"
-    qm set "$VMID" --ide2 "$ISO_STORAGE:iso/$ISO,media=cdrom" --vga virtio --agent enabled=1 --boot order=ide2;scsi0 --tags "$TAGS"
+    $QM set "$VMID" --scsihw virtio-scsi-pci --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on"
+    $QM set "$VMID" --ide2 "$ISO_STORAGE:iso/$ISO,media=cdrom" --vga virtio --agent enabled=1 --boot order=ide2;scsi0 --tags "$TAGS"
     configure_cpu_affinity "$VMID"
     echo -e "${GN}Sucesso!${CL}"; read -p "Enter..."
 }
 
+# --- MÓDULO 4: BSD / OUTROS ---
 create_other_vm() {
     echo -e "${GN}--- BSD / OUTROS ---${CL}"
     echo "1) FreeBSD 14"; echo "2) OpenBSD 7.6"; echo "3) NetBSD 10"; echo "4) Haiku"
-    echo "5) OpenIndiana"; echo "6) FreeDOS"; echo "0) Cancelar e Voltar"
+    echo "5) OpenIndiana"; echo "6) FreeDOS"; echo "0) Voltar"
     read -p "Opção: " OPT
     TAGS="vm,amd64"
 
@@ -353,10 +340,9 @@ create_other_vm() {
     fi
 
     read -p "ID: " VMID; read -p "Nome: " VMNAME
-    qm create "$VMID" --name "$VMNAME" --memory 4096 --cores 2 --cpu host --net0 virtio,bridge="$DEFAULT_BRIDGE" --ostype other
+    $QM create "$VMID" --name "$VMNAME" --memory 4096 --cores 2 --cpu host --net0 virtio,bridge="$DEFAULT_BRIDGE" --ostype other
     read -p "Disco GB (32): " DSIZE; [ -z "$DSIZE" ] && DSIZE=32
-    qm set "$VMID" --scsihw virtio-scsi-pci --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on"
-    qm set "$VMID" --ide2 "$ISO_STORAGE:iso/$ISO,media=cdrom" --vga std --boot order=ide2;scsi0 --tags "$TAGS"
+    $QM set "$VMID" --scsihw virtio-scsi-pci --scsi0 "$DEFAULT_STORAGE:${DSIZE},cache=writeback,discard=on" --ide2 "$ISO_STORAGE:iso/$ISO,media=cdrom" --vga std --boot order=ide2;scsi0 --tags "$TAGS"
     configure_cpu_affinity "$VMID"
     echo -e "${GN}Sucesso!${CL}"; read -p "Enter..."
 }
