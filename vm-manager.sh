@@ -1,9 +1,9 @@
 #!/bin/bash
 # ==============================================================================
-# PROXMOX VM MANAGER - ALEOGR (v7.5 - Fixed & Complete)
+# PROXMOX VM MANAGER - ALEOGR (v7.6 - Ubuntu ISO Added)
 # ==============================================================================
 # Gerenciamento completo de VMs.
-# Correção: Funções completas, sem abreviações.
+# Novidade: Adicionado Ubuntu 24.10 Desktop (Instalação Manual/ISO).
 # ==============================================================================
 
 # --- VERIFICAÇÃO DE ROOT ---
@@ -39,7 +39,7 @@ header() {
  \_/\_/\____/(____) \___/  \___/ (__\_)
 EOF
     echo -e "${CL}"
-    echo -e "${YW}VM Manager v7.5${CL}"
+    echo -e "${YW}VM Manager v7.6${CL}"
     echo ""
 }
 
@@ -200,7 +200,7 @@ create_windows_vm() {
     case $WIN_TYPE in
         1) ISO_SEARCH="win11"; TAGS="vm,amd64,windows" ;;
         2) ISO_SEARCH="server"; TAGS="vm,amd64,windows" ;;
-        3) ISO_SEARCH="win11"; TAGS="vm,amd64,windows" ;; # GPU adicionada depois
+        3) ISO_SEARCH="win11"; TAGS="vm,amd64,windows" ;; # GPU é ativada depois
         0) return ;;
         *) echo "Inválido"; sleep 1; return ;;
     esac
@@ -213,6 +213,7 @@ create_windows_vm() {
     VIRTIO_ISO=$(find_iso "virtio")
     if [ -z "$WIN_ISO" ]; then read -p "Caminho ISO Windows: " WIN_ISO; fi
 
+    echo -e "${BL}Criando VM para instalação...${CL}"
     $QM create "$VMID" --name "$VMNAME" --memory 8192 --cores 4 \
         --machine q35 --bios ovmf --cpu host --numa 1 --net0 virtio,bridge="$DEFAULT_BRIDGE" --ostype win11 --scsihw virtio-scsi-pci
 
@@ -229,18 +230,22 @@ create_windows_vm() {
     if [ "$WIN_TYPE" == "3" ]; then
         echo -e "${YW}Modo Gamer: Use o menu 'Alternar GPU' após instalar o Windows.${CL}"
         configure_cpu_affinity "$VMID"
+        echo -e "${YW}NOTA: A GPU NVIDIA NÃO foi anexada ainda.${CL}"
+        echo "1. Instale o Windows pelo Console."
+        echo "2. Instale Drivers (VirtIO + NVIDIA)."
+        echo "3. Use a opção 'Alternar GPU' no menu de gerenciamento para ativar o Passthrough."
     else
         configure_cpu_affinity "$VMID"
     fi
+    
     echo -e "${GN}Sucesso!${CL}"; read -p "Enter..."
 }
 
 # --- CRIAÇÃO DE LINUX CLOUD ---
 create_cloud_vm() {
     echo -e "${GN}--- LINUX CLOUD-INIT ---${CL}"
-    echo "1) Debian 13"; echo "2) Ubuntu 24.04"; echo "3) Kali Linux"; echo "4) Fedora 41"
-    echo "5) Arch Linux"; echo "6) CentOS 9"; echo "7) Rocky 9"
-    echo "0) Voltar"
+    echo "1) Debian 13"; echo "2) Ubuntu 24.04"; echo "3) Kali Linux"; echo "4) Fedora 41"; echo "5) Arch Linux"
+    echo "6) CentOS 9"; echo "7) Rocky 9"; echo "0) Voltar"
     read -p "Opção: " OPT
     TAGS="vm,amd64,linux"
     
@@ -261,10 +266,8 @@ create_cloud_vm() {
     $QM create "$VMID" --name "$VMNAME" --memory 2048 --cores 2 --cpu host --net0 virtio,bridge="$DEFAULT_BRIDGE"
     $QM importdisk "$VMID" "$TEMP_DIR/$IMG" "$DEFAULT_STORAGE"
     $QM set "$VMID" --scsihw virtio-scsi-pci --scsi0 "$DEFAULT_STORAGE:vm-$VMID-disk-0,discard=on"
-    $QM set "$VMID" --ide2 "$DEFAULT_STORAGE:cloudinit" --boot c --bootdisk scsi0 --serial0 socket --vga serial0
-    $QM set "$VMID" --ciuser "$DEFAULT_USER" --ipconfig0 ip=dhcp --tags "$TAGS"
-
-    read -p "Espaço Extra (GB) [32]: " ADD_GB; [ -z "$ADD_GB" ] && ADD_GB=32
+    $QM set "$VMID" --ide2 "$DEFAULT_STORAGE:cloudinit" --boot c --bootdisk scsi0 --serial0 socket --vga serial0 --ciuser "$DEFAULT_USER" --ipconfig0 ip=dhcp --tags "$TAGS"
+    read -p "Extra GB: " ADD_GB; [ -z "$ADD_GB" ] && ADD_GB=32
     $QM resize "$VMID" scsi0 "+${ADD_GB}G"
     rm "$TEMP_DIR/$IMG"
     configure_cpu_affinity "$VMID"
@@ -273,19 +276,29 @@ create_cloud_vm() {
 
 # --- CRIAÇÃO DE LINUX ISO ---
 create_iso_vm() {
-    echo -e "${GN}--- LINUX ISO (Manual) ---${CL}"
-    echo "1) Mint 22"; echo "2) Kali Std"; echo "3) Kali Purple"; echo "4) Manjaro"; echo "5) Slackware 15"; echo "6) Gentoo"; echo "0) Voltar"
+    echo -e "${GN}--- LINUX MANUAL ISO ---${CL}"
+    # NOVIDADE v7.6: Ubuntu adicionado
+    echo "1) Ubuntu 24.10 Desktop"
+    echo "2) Mint 22 (Wilma)"
+    echo "3) Kali Standard"
+    echo "4) Kali Purple"
+    echo "5) Manjaro Gnome"
+    echo "6) Slackware 15"
+    echo "7) Gentoo Minimal"
+    echo "0) Voltar"
     read -p "Opção: " OPT
     TAGS="vm,amd64,linux"
 
     case $OPT in
-        1) URL="https://mirrors.edge.kernel.org/linuxmint/stable/22/linuxmint-22-cinnamon-64bit.iso"; ISO="mint22.iso" ;;
-        2) URL="https://cdimage.kali.org/current/kali-linux-installer-amd64.iso"; ISO="kali-std.iso" ;;
-        3) URL="https://cdimage.kali.org/current/kali-linux-purple-installer-amd64.iso"; ISO="kali-purple.iso" ;;
-        4) URL="https://download.manjaro.org/gnome/24.0.6/manjaro-gnome-24.0.6-240729-linux69.iso"; ISO="manjaro.iso" ;;
-        5) URL="https://mirrors.slackware.com/slackware/slackware64-15.0-iso/slackware64-15.0-install-dvd.iso"; ISO="slack15.iso" ;;
-        6) URL="https://distfiles.gentoo.org/releases/amd64/autobuilds/current-install-amd64-minimal/install-amd64-minimal.iso"; ISO="gentoo.iso" ;;
+        1) URL="https://releases.ubuntu.com/24.10/ubuntu-24.10-desktop-amd64.iso"; ISO="ubuntu24-10.iso" ;;
+        2) URL="https://mirrors.edge.kernel.org/linuxmint/stable/22/linuxmint-22-cinnamon-64bit.iso"; ISO="mint22.iso" ;;
+        3) URL="https://cdimage.kali.org/current/kali-linux-installer-amd64.iso"; ISO="kali-std.iso" ;;
+        4) URL="https://cdimage.kali.org/current/kali-linux-purple-installer-amd64.iso"; ISO="kali-purple.iso" ;;
+        5) URL="https://download.manjaro.org/gnome/24.0.6/manjaro-gnome-24.0.6-240729-linux69.iso"; ISO="manjaro.iso" ;;
+        6) URL="https://mirrors.slackware.com/slackware/slackware64-15.0-iso/slackware64-15.0-install-dvd.iso"; ISO="slack15.iso" ;;
+        7) URL="https://distfiles.gentoo.org/releases/amd64/autobuilds/current-install-amd64-minimal/install-amd64-minimal.iso"; ISO="gentoo.iso" ;;
         0) return ;;
+        *) echo "Inválido."; sleep 1; return ;;
     esac
 
     if [ ! -f "$TEMP_DIR/$ISO" ]; then wget -q --show-progress "$URL" -O "$TEMP_DIR/$ISO"; fi
@@ -298,7 +311,7 @@ create_iso_vm() {
     echo -e "${GN}Sucesso!${CL}"; read -p "Enter..."
 }
 
-# --- CRIAÇÃO DE BSD/OUTROS ---
+# --- MÓDULO 4: BSD / OUTROS ---
 create_other_vm() {
     echo -e "${GN}--- BSD / OUTROS ---${CL}"
     echo "1) FreeBSD 14"; echo "2) OpenBSD 7.6"; echo "3) NetBSD 10"; echo "4) Haiku"
@@ -361,7 +374,7 @@ submenu_create() {
 
 while true; do
     header
-    echo -e "1) ${GN}Gerenciar VMs (Dashboard)${CL}"
+    echo -e "1) ${GN}Listar e Gerenciar VMs (Dashboard)${CL}"
     echo -e "2) ${YW}Criar Nova VM${CL}"
     echo "0) Sair"
     echo ""
